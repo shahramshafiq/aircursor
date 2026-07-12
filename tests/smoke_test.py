@@ -1,0 +1,474 @@
+"""Headless smoke tests for AirCursor.
+
+Never opens the camera or a window, never touches the real mouse (only the
+FakeBackend), never starts the keyboard listener. Run from the project
+folder with: py -3.12 tests/smoke_test.py
+"""
+
+import os
+import sys
+import math
+import random
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+PARENT = os.path.dirname(HERE)
+sys.path.insert(0, PARENT)
+
+from euro_filter import OneEuroFilter
+from mapping import CoordinateMapper
+from gestures import GestureEngine
+from backends import FakeBackend
+import hand
+from main import process_frame, toggle_control, apply_result
+
+PASSED = 0
+FAILED = 0
+
+
+def check(name, condition):
+    global PASSED, FAILED
+    if condition:
+        PASSED = PASSED + 1
+        print("PASS  " + name)
+    else:
+        FAILED = FAILED + 1
+        print("FAIL  " + name)
+
+
+class LM:
+    def __init__(self, x, y, z=0.0):
+        self.x = x
+        self.y = y
+        self.z = z
+
+
+def make_hand(index_up=True, middle_up=False, ring_up=False, pinky_up=False,
+              pinch=False, index_tip=(0.5, 0.5)):
+    points = []
+    for _ in range(21):
+        points.append(LM(0.5, 0.5))
+
+    points[0] = LM(0.5, 0.9)   # wrist
+    points[9] = LM(0.5, 0.5)   # middle mcp, gives hand_size 0.4
+
+    itx, ity = index_tip
+    points[8] = LM(itx, ity)   # index tip
+    if index_up:
+        points[6] = LM(itx, ity + 0.1)
+    else:
+        points[6] = LM(itx, ity - 0.1)
+    points[5] = LM(itx, ity + 0.15)
+
+    points[12] = LM(0.45, 0.3 if middle_up else 0.7)
+    points[10] = LM(0.45, 0.4 if middle_up else 0.6)
+
+    points[16] = LM(0.55, 0.3 if ring_up else 0.7)
+    points[14] = LM(0.55, 0.4 if ring_up else 0.6)
+
+    points[20] = LM(0.6, 0.3 if pinky_up else 0.7)
+    points[18] = LM(0.6, 0.4 if pinky_up else 0.6)
+
+    if pinch:
+        points[4] = LM(itx + 0.02, ity + 0.02)
+    else:
+        points[4] = LM(itx - 0.3, ity + 0.1)
+    points[3] = LM(itx - 0.1, ity + 0.1)
+    return points
+
+
+def scale_hand(points, factor):
+    scaled = []
+    for p in points:
+        scaled.append(LM(p.x * factor, p.y * factor, p.z))
+    return scaled
+
+
+def variance(values):
+    n = len(values)
+    if n == 0:
+        return 0.0
+    mean = sum(values) / n
+    total = 0.0
+    for v in values:
+        total = total + (v - mean) * (v - mean)
+    return total / n
+
+
+# ---------- One Euro Filter ----------
+
+def test_euro_noise():
+    random.seed(7)
+    flt = OneEuroFilter(min_cutoff=1.2, beta=0.03)
+    freq = 60.0
+    raw = []
+    out = []
+    t = 0.0
+    for i in range(300):
+        noise = (random.random() - 0.5) * 20.0
+        x = 100.0 + noise
+        raw.append(x)
+        out.append(flt.filter(x, t))
+        t = t + 1.0 / freq
+    in_var = variance(raw[1:])
+    out_var = variance(out[1:])
+    check("euro reduces noise variance", out_var < in_var * 0.25)
+
+
+def test_euro_ramp():
+    flt = OneEuroFilter(min_cutoff=1.2, beta=0.03)
+    freq = 60.0
+    t = 0.0
+    last_in = 0.0
+    last_out = 0.0
+    for i in range(300):
+        x = i * 0.5
+        last_in = x
+        last_out = flt.filter(x, t)
+        t = t + 1.0 / freq
+    err = abs(last_out - last_in)
+    check("euro tracks ramp with small lag", err < 5.0)
+
+
+# ---------- Mapping ----------
+
+def test_mapping():
+    mapper = CoordinateMapper(1920, 1080, margin=0.15)
+    cx, cy = mapper.map_point(0.5, 0.5)
+    check("map center to screen center", abs(cx - 960) < 1 and abs(cy - 540) < 1)
+
+    lx, ly = mapper.map_point(0.0, 0.0)
+    check("map below region clamps to zero", lx == 0 and ly == 0)
+
+    hx, hy = mapper.map_point(1.0, 1.0)
+    check("map above region clamps to max", abs(hx - 1920) < 1 and abs(hy - 1080) < 1)
+
+    mx, my = mapper.map_point(0.15, 0.15)
+    check("margin edge maps to origin", abs(mx) < 1 and abs(my) < 1)
+
+
+# ---------- Fingers and pinch ----------
+
+def test_fingers():
+    point = make_hand(index_up=True, middle_up=False, ring_up=False, pinky_up=False)
+    fu = hand.fingers_up(point)
+    check("pointing reads index only",
+          fu["index"] and not fu["middle"] and not fu["ring"] and not fu["pinky"])
+
+    two = make_hand(index_up=True, middle_up=True)
+    fu = hand.fingers_up(two)
+    check("two finger reads index and middle",
+          fu["index"] and fu["middle"] and not fu["ring"] and not fu["pinky"])
+
+    palm = make_hand(index_up=True, middle_up=True, ring_up=True, pinky_up=True)
+    fu = hand.fingers_up(palm)
+    check("palm reads all four up",
+          fu["index"] and fu["middle"] and fu["ring"] and fu["pinky"])
+
+    fist = make_hand(index_up=False, middle_up=False, ring_up=False, pinky_up=False)
+    fu = hand.fingers_up(fist)
+    check("fist reads all four down",
+          not fu["index"] and not fu["middle"] and not fu["ring"] and not fu["pinky"])
+
+
+def test_pinch_ratio():
+    open_hand = make_hand(pinch=False)
+    closed_hand = make_hand(pinch=True)
+    r_open = hand.pinch_ratio(open_hand, hand.THUMB_TIP, hand.INDEX_TIP)
+    r_closed = hand.pinch_ratio(closed_hand, hand.THUMB_TIP, hand.INDEX_TIP)
+    check("pinch ratio shrinks when tips meet", r_closed < r_open)
+
+    scaled = scale_hand(closed_hand, 0.5)
+    r_scaled = hand.pinch_ratio(scaled, hand.THUMB_TIP, hand.INDEX_TIP)
+    check("pinch ratio is scale invariant", abs(r_scaled - r_closed) < 0.02)
+
+
+# ---------- State machine ----------
+
+def fresh_engine():
+    return GestureEngine((1920, 1080), margin=0.15)
+
+
+def test_move_tracks_no_clicks():
+    engine = fresh_engine()
+    backend = FakeBackend()
+    t = 0.0
+    xs = [0.4, 0.45, 0.5, 0.55, 0.6]
+    for x in xs:
+        h = make_hand(index_up=True, middle_up=False, index_tip=(x, 0.5))
+        process_frame(engine, backend, h, t, True)
+        t = t + 0.03
+
+    moves = []
+    clicks = 0
+    for call in backend.calls:
+        if call[0] == "move":
+            moves.append(call)
+        if call[0] == "click":
+            clicks = clicks + 1
+    check("move posture produces move calls", len(moves) >= 3)
+    check("move posture issues zero clicks", clicks == 0)
+    check("cursor tracks finger to the right", moves[-1][1] > moves[0][1])
+
+
+def test_quick_pinch_click_frozen():
+    engine = fresh_engine()
+    backend = FakeBackend()
+
+    process_frame(engine, backend, make_hand(index_tip=(0.5, 0.5)), 0.0, True)
+    process_frame(engine, backend, make_hand(index_tip=(0.5, 0.5)), 0.016, True)
+
+    process_frame(engine, backend, make_hand(pinch=True, index_tip=(0.5, 0.5)), 1.0, True)
+    process_frame(engine, backend, make_hand(pinch=True, index_tip=(0.7, 0.7)), 1.02, True)
+    process_frame(engine, backend, make_hand(pinch=False, index_tip=(0.7, 0.7)), 1.05, True)
+
+    left_clicks = 0
+    for call in backend.calls:
+        if call[0] == "click" and call[1] == "left":
+            left_clicks = left_clicks + 1
+    check("quick pinch issues exactly one left click", left_clicks == 1)
+
+    moved_location = ("move", 1508, 848)  # mapped 0.7,0.7 approximately
+    jumped = moved_location in backend.calls
+    check("cursor did not jump to pinch moved location", not jumped)
+
+    froze_at_center = ("move", 960, 540) in backend.calls
+    check("click landed at frozen center", froze_at_center)
+
+
+def test_drag_no_click():
+    engine = fresh_engine()
+    backend = FakeBackend()
+
+    process_frame(engine, backend, make_hand(index_tip=(0.5, 0.5)), 0.0, True)
+    process_frame(engine, backend, make_hand(pinch=True, index_tip=(0.5, 0.5)), 1.0, True)
+    process_frame(engine, backend, make_hand(pinch=True, index_tip=(0.55, 0.55)), 1.1, True)
+    process_frame(engine, backend, make_hand(pinch=True, index_tip=(0.6, 0.6)), 1.2, True)
+    process_frame(engine, backend, make_hand(pinch=True, index_tip=(0.65, 0.65)), 1.4, True)
+    process_frame(engine, backend, make_hand(pinch=True, index_tip=(0.7, 0.7)), 1.5, True)
+    process_frame(engine, backend, make_hand(pinch=False, index_tip=(0.7, 0.7)), 1.6, True)
+
+    has_press = ("press", "left") in backend.calls
+    has_release = ("release", "left") in backend.calls
+    has_click = False
+    for call in backend.calls:
+        if call[0] == "click" and call[1] == "left":
+            has_click = True
+    check("drag presses left", has_press)
+    check("drag releases left", has_release)
+    check("drag does not emit a click", not has_click)
+
+
+def test_double_click():
+    engine = fresh_engine()
+    backend = FakeBackend()
+
+    process_frame(engine, backend, make_hand(index_tip=(0.5, 0.5)), 0.0, True)
+    # tap one
+    process_frame(engine, backend, make_hand(pinch=True, index_tip=(0.5, 0.5)), 1.0, True)
+    process_frame(engine, backend, make_hand(pinch=False, index_tip=(0.5, 0.5)), 1.1, True)
+    # release gap
+    process_frame(engine, backend, make_hand(pinch=False, index_tip=(0.5, 0.5)), 1.2, True)
+    # tap two within double window
+    process_frame(engine, backend, make_hand(pinch=True, index_tip=(0.5, 0.5)), 1.3, True)
+    process_frame(engine, backend, make_hand(pinch=False, index_tip=(0.5, 0.5)), 1.4, True)
+
+    left_clicks = 0
+    for call in backend.calls:
+        if call[0] == "click" and call[1] == "left":
+            left_clicks = left_clicks + 1
+    check("two quick taps issue two left clicks", left_clicks == 2)
+
+
+def test_right_click():
+    engine = fresh_engine()
+    backend = FakeBackend()
+
+    process_frame(engine, backend, make_hand(index_up=True, middle_up=True,
+                                             index_tip=(0.5, 0.5)), 0.0, True)
+    process_frame(engine, backend, make_hand(index_up=True, middle_up=True,
+                                             pinch=True, index_tip=(0.5, 0.5)), 1.0, True)
+    process_frame(engine, backend, make_hand(index_up=True, middle_up=True,
+                                             pinch=False, index_tip=(0.5, 0.5)), 1.1, True)
+
+    right_clicks = 0
+    left_clicks = 0
+    for call in backend.calls:
+        if call[0] == "click" and call[1] == "right":
+            right_clicks = right_clicks + 1
+        if call[0] == "click" and call[1] == "left":
+            left_clicks = left_clicks + 1
+    check("two finger pinch issues one right click", right_clicks == 1)
+    check("two finger pinch issues no left click", left_clicks == 0)
+
+
+def test_scroll_sign():
+    engine = fresh_engine()
+    backend = FakeBackend()
+    t = 1.0
+
+    def two(y):
+        return make_hand(index_up=True, middle_up=True, index_tip=(0.5, y))
+
+    process_frame(engine, backend, two(0.50), t, True)
+    t = t + 0.06
+    # tiny move under deadzone, should not scroll
+    process_frame(engine, backend, two(0.49), t, True)
+    t = t + 0.06
+    # move up
+    process_frame(engine, backend, two(0.44), t, True)
+    t = t + 0.06
+    process_frame(engine, backend, two(0.39), t, True)
+    t = t + 0.06
+    # move down
+    process_frame(engine, backend, two(0.44), t, True)
+    t = t + 0.06
+    process_frame(engine, backend, two(0.49), t, True)
+
+    scrolls = []
+    for call in backend.calls:
+        if call[0] == "scroll":
+            scrolls.append(call)
+
+    check("scroll produced ticks", len(scrolls) >= 2)
+    first_up = len(scrolls) > 0 and scrolls[0][2] > 0
+    saw_down = False
+    for s in scrolls:
+        if s[2] < 0:
+            saw_down = True
+    check("scroll up is positive", first_up)
+    check("scroll down is negative", saw_down)
+    check("scroll is not one per frame", len(scrolls) <= 4)
+
+
+def test_palm_and_fist_idle():
+    engine = fresh_engine()
+    backend = FakeBackend()
+    palm = make_hand(index_up=True, middle_up=True, ring_up=True, pinky_up=True)
+    result = process_frame(engine, backend, palm, 1.0, True)
+    check("palm reports PAUSED", result["mode"] == "PAUSED")
+    check("palm issues zero backend calls", len(backend.calls) == 0)
+
+    engine2 = fresh_engine()
+    backend2 = FakeBackend()
+    fist = make_hand(index_up=False, middle_up=False, ring_up=False, pinky_up=False)
+    result2 = process_frame(engine2, backend2, fist, 1.0, True)
+    check("fist reports IDLE", result2["mode"] == "IDLE")
+    check("fist issues zero backend calls", len(backend2.calls) == 0)
+
+
+def test_click_cooldown_held_pinch():
+    engine = fresh_engine()
+    backend = FakeBackend()
+
+    process_frame(engine, backend, make_hand(index_tip=(0.5, 0.5)), 0.0, True)
+    process_frame(engine, backend, make_hand(pinch=True, index_tip=(0.5, 0.5)), 1.0, True)
+    # hold the pinch for many frames without releasing
+    hold_t = 1.0
+    for i in range(20):
+        hold_t = hold_t + 0.02
+        process_frame(engine, backend, make_hand(pinch=True, index_tip=(0.5, 0.5)), hold_t, True)
+
+    left_clicks = 0
+    for call in backend.calls:
+        if call[0] == "click" and call[1] == "left":
+            left_clicks = left_clicks + 1
+    check("held pinch emits no clicks", left_clicks == 0)
+
+
+def test_no_hand_safe():
+    engine = fresh_engine()
+    backend = FakeBackend()
+    result = process_frame(engine, backend, None, 1.0, True)
+    check("no hand reports IDLE", result["mode"] == "IDLE")
+    check("no hand issues zero backend calls", len(backend.calls) == 0)
+
+
+def test_toggle_off_mid_drag_releases():
+    # Start a real drag while control is on, then pause with the toggle.
+    # The physical button must be released so pausing never traps the user.
+    engine = fresh_engine()
+    backend = FakeBackend()
+
+    process_frame(engine, backend, make_hand(index_tip=(0.5, 0.5)), 0.0, True)
+    process_frame(engine, backend, make_hand(pinch=True, index_tip=(0.5, 0.5)), 1.0, True)
+    process_frame(engine, backend, make_hand(pinch=True, index_tip=(0.55, 0.55)), 1.4, True)
+    check("drag is active before pause", engine.dragging is True)
+    pressed = ("press", "left") in backend.calls
+    check("drag pressed the button", pressed)
+
+    new_state = toggle_control(True, engine, backend)
+    check("toggle turns control off", new_state is False)
+    check("toggle clears the drag flag", engine.dragging is False)
+    check("toggle released the stuck button", ("release", "left") in backend.calls)
+
+
+def test_apply_result_off_is_zero_action():
+    # A rich result while control is off must reach the backend zero times.
+    backend = FakeBackend()
+    loaded = {
+        "target": (100, 200),
+        "press": "left",
+        "release": "left",
+        "actions": [("left_click",), ("right_click",), ("scroll", 1)],
+    }
+    apply_result(loaded, backend, False)
+    check("apply_result with control off issues zero calls", len(backend.calls) == 0)
+
+
+class BoomBackend(FakeBackend):
+    # Fails on every action, to prove one bad pynput call cannot kill a frame.
+    def move(self, x, y):
+        raise RuntimeError("move failed")
+
+    def click(self, button):
+        raise RuntimeError("click failed")
+
+    def scroll(self, dx, dy):
+        raise RuntimeError("scroll failed")
+
+
+def test_backend_failure_does_not_propagate():
+    backend = BoomBackend()
+    loaded = {
+        "target": (10, 20),
+        "press": None,
+        "release": None,
+        "actions": [("left_click",), ("scroll", 1)],
+    }
+    ok = True
+    try:
+        apply_result(loaded, backend, True)
+    except Exception:
+        ok = False
+    check("failing backend calls are swallowed, not raised", ok)
+
+
+def run_all():
+    test_euro_noise()
+    test_euro_ramp()
+    test_mapping()
+    test_fingers()
+    test_pinch_ratio()
+    test_move_tracks_no_clicks()
+    test_quick_pinch_click_frozen()
+    test_drag_no_click()
+    test_double_click()
+    test_right_click()
+    test_scroll_sign()
+    test_palm_and_fist_idle()
+    test_click_cooldown_held_pinch()
+    test_no_hand_safe()
+    test_toggle_off_mid_drag_releases()
+    test_apply_result_off_is_zero_action()
+    test_backend_failure_does_not_propagate()
+
+    print("")
+    print("TOTAL " + str(PASSED + FAILED) + "  PASS " + str(PASSED) + "  FAIL " + str(FAILED))
+    if FAILED == 0:
+        sys.exit(0)
+    else:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    run_all()
