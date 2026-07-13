@@ -20,6 +20,7 @@ from gestures import GestureEngine
 from backends import FakeBackend
 import hand
 from main import process_frame, toggle_control, apply_result
+from tutorial import TutorialFlow
 
 PASSED = 0
 FAILED = 0
@@ -443,6 +444,92 @@ def test_backend_failure_does_not_propagate():
     check("failing backend calls are swallowed, not raised", ok)
 
 
+def _res(mode="IDLE", actions=None):
+    return {"mode": mode, "actions": actions or [], "fingers": {},
+            "pinch_ratio": 0.0, "target": None}
+
+
+def test_tutorial_flow():
+    tf = TutorialFlow()
+
+    info = tf.update(False, _res(), 0.0)
+    check("tutorial starts on the hand step", info["id"] == "hand")
+    info = tf.update(False, _res(), 5.0)
+    check("no hand does not advance the tutorial", info["id"] == "hand")
+
+    tf.update(True, _res("PAUSED"), 5.0)
+    info = tf.update(True, _res("PAUSED"), 5.5)
+    check("hand step completes and celebrates", info["celebrating"] is True)
+    info = tf.update(True, _res("PAUSED"), 6.5)
+    check("tutorial advances to the move step", info["id"] == "move")
+
+    tf.update(True, _res("IDLE"), 6.6)
+    info = tf.update(True, _res("IDLE"), 8.0)
+    check("wrong posture does not finish the move step",
+          info["id"] == "move" and not info["celebrating"])
+
+    tf.update(True, _res("MOVE"), 8.0)
+    info = tf.update(True, _res("MOVE"), 9.2)
+    check("move step completes when MOVE is held", info["celebrating"] is True)
+    info = tf.update(True, _res(), 10.3)
+    check("tutorial advances to the click step", info["id"] == "click")
+
+    info = tf.update(True, _res("MOVE", [("left_click",)]), 10.4)
+    check("click step completes on a left_click action", info["celebrating"] is True)
+    info = tf.update(True, _res(), 11.5)
+    check("tutorial advances to the scroll step", info["id"] == "scroll")
+
+    info = tf.update(True, _res("SCROLL", [("scroll", 1)]), 11.6)
+    check("scroll step completes on a scroll action", info["celebrating"] is True)
+    info = tf.update(True, _res(), 12.7)
+    check("tutorial advances to the pause step", info["id"] == "pause")
+
+    tf.update(True, _res("PAUSED"), 12.8)
+    info = tf.update(True, _res("PAUSED"), 13.7)
+    check("pause step completes when palm is held", info["celebrating"] is True)
+    info = tf.update(True, _res(), 14.8)
+    check("tutorial reaches done and is finished",
+          info["id"] == "done" and tf.finished is True)
+
+
+def test_tutorial_skip():
+    tf = TutorialFlow()
+    tf.skip()
+    check("skip marks the tutorial finished", tf.finished is True)
+    info = tf.update(True, _res(), 1.0)
+    check("skip lands on the done screen", info["id"] == "done")
+
+
+def test_tutorial_blocks_the_mouse():
+    # Mirrors the main loop contract: while the tutorial is active the
+    # applied control is forced off, so a real pinch must move the mouse
+    # zero times. After control is on, the same pinch clicks.
+    engine = fresh_engine()
+    backend = FakeBackend()
+    tf = TutorialFlow()
+
+    t = 0.0
+    process_frame(engine, backend, make_hand(index_tip=(0.5, 0.5)), t, False)
+    t = 1.0
+    process_frame(engine, backend, make_hand(pinch=True, index_tip=(0.5, 0.5)), t, False)
+    t = 1.1
+    process_frame(engine, backend, make_hand(index_tip=(0.5, 0.5)), t, False)
+    check("tutorial (control off) issues zero mouse calls on a pinch",
+          len(backend.calls) == 0)
+
+    # Now control is on, the same pinch cycle should click once.
+    engine2 = fresh_engine()
+    backend2 = FakeBackend()
+    process_frame(engine2, backend2, make_hand(index_tip=(0.5, 0.5)), 0.0, True)
+    process_frame(engine2, backend2, make_hand(pinch=True, index_tip=(0.5, 0.5)), 0.1, True)
+    process_frame(engine2, backend2, make_hand(index_tip=(0.5, 0.5)), 0.2, True)
+    clicks = 0
+    for call in backend2.calls:
+        if call[0] == "click" and call[1] == "left":
+            clicks = clicks + 1
+    check("control on issues exactly one click on the same pinch", clicks == 1)
+
+
 def run_all():
     test_euro_noise()
     test_euro_ramp()
@@ -461,6 +548,9 @@ def run_all():
     test_toggle_off_mid_drag_releases()
     test_apply_result_off_is_zero_action()
     test_backend_failure_does_not_propagate()
+    test_tutorial_flow()
+    test_tutorial_skip()
+    test_tutorial_blocks_the_mouse()
 
     print("")
     print("TOTAL " + str(PASSED + FAILED) + "  PASS " + str(PASSED) + "  FAIL " + str(FAILED))

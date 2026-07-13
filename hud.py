@@ -75,6 +75,87 @@ def _threshold_tick(frame, bar_x1, bar_x2, bar_y, thresh, color):
     cv2.line(frame, (tx, bar_y - 11), (tx, bar_y + 11), color, 2, cv2.LINE_AA)
 
 
+def _rounded_panel(frame, x1, y1, x2, y2, alpha=0.72):
+    # a slightly darker, more solid card for the tutorial so instructions
+    # are easy to read over a busy camera image
+    h, w = frame.shape[:2]
+    x1 = max(0, x1)
+    y1 = max(0, y1)
+    x2 = min(w, x2)
+    y2 = min(h, y2)
+    if x2 <= x1 or y2 <= y1:
+        return
+    slab = frame[y1:y2, x1:x2].copy()
+    box = slab.copy()
+    box[:] = (18, 18, 18)
+    frame[y1:y2, x1:x2] = cv2.addWeighted(box, alpha, slab, 1.0 - alpha, 0)
+    cv2.rectangle(frame, (x1, y1), (x2 - 1, y1 + 4), ACCENT, -1)
+
+
+def _center_text(frame, text, cy, font, scale, color, thick):
+    w = frame.shape[1]
+    (tw, th), _ = cv2.getTextSize(text, font, scale, thick)
+    cv2.putText(frame, text, ((w - tw) // 2, cy), font, scale, color, thick, cv2.LINE_AA)
+
+
+def draw_tutorial(frame, info, has_hand):
+    """Big friendly onboarding card. Teaches one gesture at a time."""
+    h, w = frame.shape[:2]
+    pw = min(760, w - 60)
+    ph = 260
+    x1 = (w - pw) // 2
+    y1 = h - ph - 40
+    x2 = x1 + pw
+    y2 = y1 + ph
+    _rounded_panel(frame, x1, y1, x2, y2)
+
+    finished = info.get("finished", False)
+    if not finished:
+        tag = "STEP " + str(info["index"] + 1) + " OF " + str(info["total"])
+        cv2.putText(frame, tag, (x1 + 30, y1 + 40), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6, GREY, 1, cv2.LINE_AA)
+
+    if info.get("celebrating", False):
+        _center_text(frame, "NICE!", y1 + 110, cv2.FONT_HERSHEY_DUPLEX, 1.6, GREEN, 3)
+        cx = w // 2
+        cv2.circle(frame, (cx, y1 + 165), 26, GREEN, 3, cv2.LINE_AA)
+        cv2.line(frame, (cx - 12, y1 + 165), (cx - 3, y1 + 175), GREEN, 3, cv2.LINE_AA)
+        cv2.line(frame, (cx - 3, y1 + 175), (cx + 14, y1 + 153), GREEN, 3, cv2.LINE_AA)
+        return frame
+
+    _center_text(frame, info["title"], y1 + 100, cv2.FONT_HERSHEY_DUPLEX, 1.2, ACCENT, 2)
+    _center_text(frame, info["body"], y1 + 150, cv2.FONT_HERSHEY_SIMPLEX, 0.7, WHITE, 1)
+
+    if finished:
+        _center_text(frame, "Press  SPACE  to control your mouse",
+                     y1 + 210, cv2.FONT_HERSHEY_SIMPLEX, 0.7, GREEN, 2)
+    else:
+        # progress bar for held gestures
+        bar_x1 = x1 + 30
+        bar_x2 = x2 - 30
+        bar_y = y2 - 46
+        cv2.rectangle(frame, (bar_x1, bar_y - 7), (bar_x2, bar_y + 7), DIM, 1)
+        fill = int(bar_x1 + info.get("progress", 0.0) * (bar_x2 - bar_x1))
+        if fill > bar_x1:
+            cv2.rectangle(frame, (bar_x1, bar_y - 7), (fill, bar_y + 7), ACCENT, -1)
+        if not has_hand:
+            _center_text(frame, "no hand detected", y2 - 16,
+                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, RED, 1)
+        else:
+            _center_text(frame, "press  S  to skip the tutorial", y2 - 16,
+                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, GREY, 1)
+
+    # progress dots along the top of the card
+    total = info.get("total", 5)
+    idx = info.get("index", 0)
+    dot_gap = 26
+    start_x = w // 2 - (total - 1) * dot_gap // 2
+    for i in range(total):
+        col = ACCENT if i <= idx else DIM
+        cv2.circle(frame, (start_x + i * dot_gap, y1 + 30), 5, col, -1, cv2.LINE_AA)
+    return frame
+
+
 def draw_hud(frame, result, control_state, fps, mapped_dot, debug=False,
              show_legend=True, pinch_on=None, pinch_off=None, tunables=None):
     """control_state is one of 'on', 'off', 'observing'.
@@ -156,6 +237,18 @@ def draw_hud(frame, result, control_state, fps, mapped_dot, debug=False,
         dx, dy = mapped_dot
         cv2.circle(frame, (int(dx), int(dy)), 9, ACCENT, 2, cv2.LINE_AA)
         cv2.circle(frame, (int(dx), int(dy)), 2, WHITE, -1, cv2.LINE_AA)
+
+    # When the mouse is not being driven, say so loudly and say how to fix
+    # it, so a new user is never confused about why the cursor is not moving.
+    if control_state != "on":
+        msg = "Press  C  to control your mouse"
+        (tw, th), _ = cv2.getTextSize(msg, cv2.FONT_HERSHEY_DUPLEX, 0.8, 2)
+        bx1 = (w - tw) // 2 - 24
+        bx2 = (w + tw) // 2 + 24
+        by = 92
+        _panel(frame, bx1, by, bx2, by + 52, alpha=0.7)
+        cv2.putText(frame, msg, ((w - tw) // 2, by + 34),
+                    cv2.FONT_HERSHEY_DUPLEX, 0.8, ACCENT, 2, cv2.LINE_AA)
 
     # Bottom key strip, short and readable
     _panel(frame, 16, h - 52, w - 16, h - 16, alpha=0.5)

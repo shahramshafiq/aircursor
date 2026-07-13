@@ -16,6 +16,7 @@ import time
 
 from backends import PynputBackend
 from gestures import GestureEngine
+from tutorial import TutorialFlow
 import hud
 
 
@@ -115,6 +116,8 @@ def build_parser():
                         help="show raw numbers on the HUD")
     parser.add_argument("--no-control", action="store_true",
                         help="run the full pipeline and HUD but do not move the real mouse")
+    parser.add_argument("--skip-tutorial", action="store_true",
+                        help="skip the onboarding tutorial and go straight to the app")
     return parser
 
 
@@ -151,8 +154,12 @@ def main():
         model_complexity=1,
     )
 
-    control_on = not args.no_control
-    observing = args.no_control
+    # The app opens in a safe state: control OFF, so the cursor never flies
+    # around before the user is ready. They learn the gestures in the
+    # tutorial, then press SPACE (or C) to take control when comfortable.
+    tutorial = None if args.skip_tutorial else TutorialFlow()
+    control_on = False
+    observing = True
 
     # Numbers surfaced on the debug HUD so the app can be tuned live.
     tunables = {
@@ -169,6 +176,9 @@ def main():
     auto_hide_at = time.time() + 12.0
 
     print("AirCursor running.")
+    if tutorial is not None:
+        print("A short tutorial will teach you the gestures. Your mouse stays")
+        print("safe (not controlled) until you finish and press SPACE.")
     print("Gestures: point = move, pinch = click, hold pinch = drag,")
     print("          two fingers = scroll, two + pinch = right click,")
     print("          open palm = pause, fist = idle.")
@@ -221,45 +231,67 @@ def main():
                 landmarks = hand_lms.landmark
                 mp_draw.draw_landmarks(frame, hand_lms, mp_hands.HAND_CONNECTIONS)
 
-            if state["toggle"]:
+            in_tutorial = tutorial is not None
+
+            # The global hotkey only matters once control is in play.
+            if state["toggle"] and not in_tutorial:
                 state["toggle"] = False
                 control_on = toggle_control(control_on, engine, backend)
                 observing = False
+            elif state["toggle"]:
+                state["toggle"] = False
 
-            result = process_frame(engine, backend, landmarks, now, control_on)
+            # During the tutorial the mouse is never driven, so the user can
+            # practice safely. The engine still runs so gestures are detected.
+            applied_control = control_on and not in_tutorial
+            result = process_frame(engine, backend, landmarks, now, applied_control)
+            has_hand = landmarks is not None
 
-            if control_on:
-                control_state = "on"
-            elif observing:
-                control_state = "observing"
-            else:
-                control_state = "off"
-
-            # Prefer the engine target for the dot, but when there is no
-            # target this frame (scroll, idle, pause) fall back to the last
-            # smoothed live position so the cursor dot never blinks out. This
-            # is purely visual and does not move the real mouse.
+            # Cursor dot follows the fingertip in every mode (visual only).
             dot_target = result.get("target", None)
             if dot_target is None:
                 dot_target = getattr(engine, "last_smoothed", None)
             dot = _screen_to_view(dot_target, screen_size, view_w, view_h)
+            if dot is not None:
+                cv2.circle(frame, (int(dot[0]), int(dot[1])), 9, hud.ACCENT, 2, cv2.LINE_AA)
+                cv2.circle(frame, (int(dot[0]), int(dot[1])), 2, hud.WHITE, -1, cv2.LINE_AA)
 
-            if legend_on and auto_hide_at is not None and now >= auto_hide_at:
-                legend_on = False
-
-            hud.draw_hud(frame, result, control_state, fps, dot,
-                         debug=args.debug, show_legend=legend_on,
-                         pinch_on=engine.pinch_on, pinch_off=engine.pinch_off,
-                         tunables=tunables)
+            if in_tutorial:
+                info = tutorial.update(has_hand, result, now)
+                hud.draw_tutorial(frame, info, has_hand)
+            else:
+                if control_on:
+                    control_state = "on"
+                elif observing:
+                    control_state = "observing"
+                else:
+                    control_state = "off"
+                if legend_on and auto_hide_at is not None and now >= auto_hide_at:
+                    legend_on = False
+                hud.draw_hud(frame, result, control_state, fps, None,
+                             debug=args.debug, show_legend=legend_on,
+                             pinch_on=engine.pinch_on, pinch_off=engine.pinch_off,
+                             tunables=tunables)
 
             cv2.imshow(window, frame)
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q") or key == 27:
                 break
-            elif key == ord("c"):
+            elif in_tutorial and key == ord("s"):
+                tutorial = None
+                observing = True
+                control_on = False
+                print("Tutorial skipped. Press C to control your mouse.")
+            elif in_tutorial and key == 32:
+                if tutorial.finished:
+                    tutorial = None
+                    control_on = True
+                    observing = False
+                    print("Control ON. Point to move, pinch to click.")
+            elif (not in_tutorial) and key == ord("c"):
                 control_on = toggle_control(control_on, engine, backend)
                 observing = False
-            elif key == ord("h"):
+            elif (not in_tutorial) and key == ord("h"):
                 legend_on = not legend_on
                 auto_hide_at = None
             elif key == ord("f"):

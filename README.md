@@ -20,6 +20,7 @@ The whole point is that it stays usable. A jittery cursor is worthless, so the s
 - Click freeze: the cursor locks in place the instant you start a pinch, so clicks land exactly where you aimed.
 - A clean gesture vocabulary: move, left click, double click, drag, right click, scroll, and pause.
 - Debounced state machines so a held pinch never machine guns clicks.
+- An interactive onboarding tutorial that teaches every gesture before the mouse is ever controlled.
 - A polished dark HUD with mode, finger indicators, a pinch meter, and a control pill.
 - A hard safety layer: the keyboard can always pause control, even while the hand is driving the mouse.
 - Fully testable core: the mouse is behind a backend interface, so the gesture logic runs headless with a fake mouse.
@@ -34,13 +35,12 @@ py -3.12 -m pip install -r requirements.txt
 py -3.12 main.py
 ```
 
-First time, run in observe mode so you can watch your gestures register before the cursor is handed over:
+On the first run an interactive tutorial teaches you every gesture one at a time. Your mouse is NOT controlled during the tutorial, so you can practice safely. It walks you through: show your hand, point to move, pinch to click, two fingers to scroll, open palm to pause. When you finish, press SPACE to take control of your mouse.
 
-```
-py -3.12 main.py --no-control
-```
+- Press S at any time to skip the tutorial.
+- Add `--skip-tutorial` to go straight to the app (it opens with control off, press C to take over).
 
-Press C when you are ready to take control.
+Once in the app, control starts OFF for safety. A banner tells you to press C to start driving your mouse.
 
 ## Gestures
 
@@ -59,6 +59,8 @@ Press C when you are ready to take control.
 
 | Key | Action |
 |---|---|
+| SPACE | Finish the tutorial and take control of your mouse |
+| S | Skip the tutorial |
 | C | Toggle control on and off |
 | Ctrl + Alt + H | Global hotkey to toggle control, works even when the cursor is being driven |
 | F | Toggle fullscreen |
