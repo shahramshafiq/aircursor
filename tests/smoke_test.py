@@ -16,10 +16,11 @@ sys.path.insert(0, PARENT)
 
 from euro_filter import OneEuroFilter
 from mapping import CoordinateMapper
-from gestures import GestureEngine
+from gestures import GestureEngine, PostureDebouncer, classify_posture
 from backends import FakeBackend
 import hand
-from main import process_frame, toggle_control, apply_result
+import hints
+from main import process_frame, toggle_control, apply_result, build_parser
 from tutorial import TutorialFlow
 
 PASSED = 0
@@ -181,6 +182,136 @@ def test_pinch_ratio():
     scaled = scale_hand(closed_hand, 0.5)
     r_scaled = hand.pinch_ratio(scaled, hand.THUMB_TIP, hand.INDEX_TIP)
     check("pinch ratio is scale invariant", abs(r_scaled - r_closed) < 0.02)
+
+
+# ---------- Posture classification and debouncing ----------
+
+def test_classify_posture():
+    def f(index=False, middle=False, ring=False, pinky=False):
+        return {"index": index, "middle": middle, "ring": ring, "pinky": pinky}
+
+    check("all four up classifies as palm",
+          classify_posture(f(True, True, True, True)) == "palm")
+    check("all four down classifies as fist",
+          classify_posture(f(False, False, False, False)) == "fist")
+    check("index and middle classifies as two_finger",
+          classify_posture(f(True, True, False, False)) == "two_finger")
+    check("index alone classifies as move",
+          classify_posture(f(True, False, False, False)) == "move")
+    check("middle alone classifies as other",
+          classify_posture(f(False, True, False, False)) == "other")
+    check("ring and pinky only classifies as other",
+          classify_posture(f(False, False, True, True)) == "other")
+
+
+def test_posture_debouncer_unit():
+    deb = PostureDebouncer(need=2)
+    check("first label confirms immediately", deb.feed("move") == "move")
+    check("repeating the same label stays confirmed", deb.feed("move") == "move")
+
+    # A single frame flicker to a different label must NOT flip yet.
+    check("one flicker frame does not confirm", deb.feed("fist") == "move")
+    # Back to the real label right away: the flicker never took hold.
+    check("returning to the real label stays confirmed", deb.feed("move") == "move")
+
+    # A genuine, sustained change confirms once it has held `need` frames.
+    check("first frame of a new label does not confirm yet",
+          deb.feed("palm") == "move")
+    check("new label confirms on the second consecutive frame",
+          deb.feed("palm") == "palm")
+    check("confirmed label holds afterward", deb.feed("palm") == "palm")
+
+    deb2 = PostureDebouncer(need=3)
+    deb2.feed("move")
+    check("need=3 requires three frames, not confirmed after one",
+          deb2.feed("fist") == "move")
+    check("need=3 not confirmed after two",
+          deb2.feed("fist") == "move")
+    check("need=3 confirmed after three", deb2.feed("fist") == "fist")
+
+
+def test_engine_ignores_single_frame_flicker():
+    # A steady MOVE hand, then exactly one noisy frame classified as a
+    # fist (as if MediaPipe briefly misread a finger), then back to MOVE.
+    # The reported mode must never dip to IDLE for that one bad frame.
+    engine = fresh_engine()
+    backend = FakeBackend()
+    t = 0.0
+    for _ in range(3):
+        r = process_frame(engine, backend, make_hand(index_tip=(0.5, 0.5)), t, True)
+        t = t + 0.03
+    check("settled in MOVE before the flicker", r["mode"] == "MOVE")
+
+    flicker_hand = make_hand(index_up=False, middle_up=False, ring_up=False, pinky_up=False)
+    r = process_frame(engine, backend, flicker_hand, t, True)
+    check("a single noisy frame does not drop out of MOVE", r["mode"] == "MOVE")
+    t = t + 0.03
+
+    r = process_frame(engine, backend, make_hand(index_tip=(0.5, 0.5)), t, True)
+    check("mode is still MOVE right after the flicker clears", r["mode"] == "MOVE")
+
+
+def test_engine_still_switches_on_a_real_change():
+    # The debounce must not block a genuine, sustained gesture change: two
+    # consecutive fist frames (need=2 default) must switch the mode.
+    engine = fresh_engine()
+    backend = FakeBackend()
+    t = 0.0
+    for _ in range(3):
+        r = process_frame(engine, backend, make_hand(index_tip=(0.5, 0.5)), t, True)
+        t = t + 0.03
+    check("settled in MOVE before the real change", r["mode"] == "MOVE")
+
+    fist_hand = make_hand(index_up=False, middle_up=False, ring_up=False, pinky_up=False)
+    r = process_frame(engine, backend, fist_hand, t, True)
+    t = t + 0.03
+    check("mode has not switched after only one fist frame", r["mode"] == "MOVE")
+    r = process_frame(engine, backend, fist_hand, t, True)
+    check("mode switches to IDLE once the fist holds for two frames", r["mode"] == "IDLE")
+
+
+def test_debounce_resets_when_hand_disappears():
+    # When the hand leaves and a new one appears, the very first reading
+    # must apply immediately, not wait on a stale confirmed posture.
+    engine = fresh_engine()
+    backend = FakeBackend()
+    process_frame(engine, backend, make_hand(index_tip=(0.5, 0.5)), 0.0, True)
+    process_frame(engine, backend, None, 1.0, True)
+    palm = make_hand(index_up=True, middle_up=True, ring_up=True, pinky_up=True)
+    r = process_frame(engine, backend, palm, 2.0, True)
+    check("a fresh hand after losing tracking classifies immediately",
+          r["mode"] == "PAUSED")
+
+
+# ---------- CLI ----------
+
+def test_posture_hold_flag():
+    args = build_parser().parse_args([])
+    check("posture-hold defaults to 2, matching the engine default",
+          args.posture_hold == 2)
+    args = build_parser().parse_args(["--posture-hold", "5"])
+    check("posture-hold parses a custom value", args.posture_hold == 5)
+    engine = GestureEngine((1920, 1080), posture_hold_frames=args.posture_hold)
+    check("the custom value reaches the debouncer", engine.posture.need == 5)
+
+
+# ---------- Status hints ----------
+
+def test_status_hints():
+    check("no hand always wins the hint",
+          hints.status_hint("MOVE", False, "on") == "Show your hand to the camera to begin")
+    check("control off asks to press C",
+          hints.status_hint("MOVE", True, "off") == "Press C to start controlling your mouse")
+    check("observing also asks to press C",
+          hints.status_hint("IDLE", True, "observing") == "Press C to start controlling your mouse")
+    check("MOVE hint explains the pinch to click",
+          "pinch" in hints.status_hint("MOVE", True, "on").lower())
+    check("SCROLL hint explains moving the hand",
+          "scroll" in hints.status_hint("SCROLL", True, "on").lower())
+    check("PAUSED hint explains how to resume",
+          "point" in hints.status_hint("PAUSED", True, "on").lower())
+    check("an unknown mode still returns a usable default",
+          len(hints.status_hint("SOMETHING NEW", True, "on")) > 0)
 
 
 # ---------- State machine ----------
@@ -536,6 +667,13 @@ def run_all():
     test_mapping()
     test_fingers()
     test_pinch_ratio()
+    test_classify_posture()
+    test_posture_debouncer_unit()
+    test_engine_ignores_single_frame_flicker()
+    test_engine_still_switches_on_a_real_change()
+    test_debounce_resets_when_hand_disappears()
+    test_posture_hold_flag()
+    test_status_hints()
     test_move_tracks_no_clicks()
     test_quick_pinch_click_frozen()
     test_drag_no_click()

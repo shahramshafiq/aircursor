@@ -8,6 +8,8 @@ compact key strip. Kept visual so the app looks like a finished product.
 
 import cv2
 
+import hints
+
 ACCENT = (255, 200, 40)      # electric cyan in BGR
 PANEL = (28, 28, 28)
 WHITE = (240, 240, 240)
@@ -156,10 +158,14 @@ def draw_tutorial(frame, info, has_hand):
     return frame
 
 
-def draw_hud(frame, result, control_state, fps, mapped_dot, debug=False,
-             show_legend=True, pinch_on=None, pinch_off=None, tunables=None):
+def draw_hud(frame, result, control_state, fps, mapped_dot, has_hand=True,
+             debug=False, show_legend=True, pinch_on=None, pinch_off=None,
+             tunables=None):
     """control_state is one of 'on', 'off', 'observing'.
 
+    has_hand drives the single status hint line: a plain English sentence
+    that always tells a forgetful or non technical user what to do right
+    now, so they never have to remember the gesture list.
     pinch_on / pinch_off draw click and release marks on the pinch meter.
     tunables is an optional dict of numbers shown only in debug mode.
     """
@@ -238,22 +244,29 @@ def draw_hud(frame, result, control_state, fps, mapped_dot, debug=False,
         cv2.circle(frame, (int(dx), int(dy)), 9, ACCENT, 2, cv2.LINE_AA)
         cv2.circle(frame, (int(dx), int(dy)), 2, WHITE, -1, cv2.LINE_AA)
 
-    # When the mouse is not being driven, say so loudly and say how to fix
-    # it, so a new user is never confused about why the cursor is not moving.
-    if control_state != "on":
-        msg = "Press  C  to control your mouse"
-        (tw, th), _ = cv2.getTextSize(msg, cv2.FONT_HERSHEY_DUPLEX, 0.8, 2)
-        bx1 = (w - tw) // 2 - 24
-        bx2 = (w + tw) // 2 + 24
-        by = 92
-        _panel(frame, bx1, by, bx2, by + 52, alpha=0.7)
-        cv2.putText(frame, msg, ((w - tw) // 2, by + 34),
-                    cv2.FONT_HERSHEY_DUPLEX, 0.8, ACCENT, 2, cv2.LINE_AA)
+    # One line, always visible, that says what to do right now. This is the
+    # main defense against a user forgetting the gestures: they never have
+    # to remember anything or hunt for the legend, they just read this.
+    # Urgent cases (no hand, or control is off) get a bigger, brighter
+    # banner since those block everything else; an in mode tip is quieter.
+    urgent = (not has_hand) or (control_state != "on")
+    hint_text = hints.status_hint(mode, has_hand, control_state)
+    scale = 0.8 if urgent else 0.6
+    thick = 2 if urgent else 1
+    color = ACCENT if urgent else WHITE
+    panel_h = 52 if urgent else 40
+    (tw, th), _ = cv2.getTextSize(hint_text, cv2.FONT_HERSHEY_DUPLEX, scale, thick)
+    bx1 = (w - tw) // 2 - 24
+    bx2 = (w + tw) // 2 + 24
+    by = 92
+    _panel(frame, bx1, by, bx2, by + panel_h, alpha=0.7)
+    cv2.putText(frame, hint_text, ((w - tw) // 2, by + panel_h - 18),
+                cv2.FONT_HERSHEY_DUPLEX, scale, color, thick, cv2.LINE_AA)
 
     # Bottom key strip, short and readable
     _panel(frame, 16, h - 52, w - 16, h - 16, alpha=0.5)
-    keys_hint = ("[C] control   [F] fullscreen   [H] legend   [Q] quit"
-                 "        Ctrl+Alt+H  global pause")
+    keys_hint = ("[C] control   [T] replay tutorial   [H] legend   [F] full screen"
+                 "   [Q] quit        Ctrl+Alt+H  global pause")
     cv2.putText(frame, keys_hint, (28, h - 28), cv2.FONT_HERSHEY_SIMPLEX,
                 0.5, WHITE, 1, cv2.LINE_AA)
 
@@ -280,6 +293,7 @@ def draw_hud(frame, result, control_state, fps, mapped_dot, debug=False,
                 tunables.get("margin", 0.0),
                 tunables.get("pinch_on", 0.0),
                 tunables.get("pinch_off", 0.0)))
+            lines.append("posture hold %d frames" % tunables.get("posture_hold", 0))
         yy = 260
         _panel(frame, 16, 236, 360, 236 + 26 * len(lines) + 12)
         for ln in lines:

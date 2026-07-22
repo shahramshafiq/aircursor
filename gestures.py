@@ -13,6 +13,72 @@ from mapping import CoordinateMapper
 import hand
 
 
+def classify_posture(fingers):
+    """Turn the four finger up/down booleans into one posture label.
+
+    Kept separate from GestureEngine so it is trivial to unit test on its
+    own: feed a finger dict, get a label back.
+    """
+    idx = fingers["index"]
+    mid = fingers["middle"]
+    ring = fingers["ring"]
+    pinky = fingers["pinky"]
+
+    if idx and mid and ring and pinky:
+        return "palm"
+    if (not idx) and (not mid) and (not ring) and (not pinky):
+        return "fist"
+    if idx and mid and (not ring) and (not pinky):
+        return "two_finger"
+    if idx and (not mid):
+        return "move"
+    return "other"
+
+
+class PostureDebouncer:
+    """Filters single frame MediaPipe noise out of the posture label.
+
+    A real webcam occasionally misreads one finger for one frame (motion
+    blur, a bad angle). Without this, that single bad frame would flip the
+    mode for an instant, for example dropping out of MOVE for one frame
+    and back, which reads as a misfire to the user. A posture only takes
+    effect once the SAME label has been seen for `need` consecutive
+    frames, so a one frame blip never changes the confirmed posture, while
+    a real gesture change still lands within a couple of frames (well
+    under 100ms at typical webcam frame rates).
+
+    The very first label ever fed is confirmed immediately: there is no
+    prior confirmed state to protect, and a brand new session should react
+    at once rather than wait.
+    """
+
+    def __init__(self, need=2):
+        self.need = need
+        self.confirmed = None
+        self.candidate = None
+        self.streak = 0
+
+    def feed(self, label):
+        if self.confirmed is None:
+            self.confirmed = label
+            self.candidate = label
+            self.streak = 1
+            return self.confirmed
+        if label == self.candidate:
+            self.streak = self.streak + 1
+        else:
+            self.candidate = label
+            self.streak = 1
+        if self.streak >= self.need:
+            self.confirmed = label
+        return self.confirmed
+
+    def reset(self):
+        self.confirmed = None
+        self.candidate = None
+        self.streak = 0
+
+
 class GestureEngine:
     def __init__(
         self,
@@ -27,11 +93,13 @@ class GestureEngine:
         click_cooldown=0.12,
         scroll_deadzone=0.02,
         scroll_cooldown=0.05,
+        posture_hold_frames=2,
     ):
         screen_w, screen_h = screen_size
         self.mapper = CoordinateMapper(screen_w, screen_h, margin)
         self.euro_x = OneEuroFilter(min_cutoff=min_cutoff, beta=beta)
         self.euro_y = OneEuroFilter(min_cutoff=min_cutoff, beta=beta)
+        self.posture = PostureDebouncer(need=posture_hold_frames)
 
         self.pinch_on = pinch_on
         self.pinch_off = pinch_off
@@ -65,6 +133,8 @@ class GestureEngine:
 
     def update(self, landmarks, now):
         # No hand in frame: hold still, drop any active drag, no actions.
+        # Reset the debouncer too, so a hand that reappears is classified
+        # fresh instead of waiting on a stale confirmed posture.
         if landmarks is None:
             result = self._blank_result("IDLE")
             if self.dragging:
@@ -73,20 +143,23 @@ class GestureEngine:
             self.pinch_active = False
             self.frozen = None
             self.scroll_ref_y = None
+            self.posture.reset()
             return result
 
         fingers = hand.fingers_up(landmarks)
         ratio = hand.pinch_ratio(landmarks, hand.THUMB_TIP, hand.INDEX_TIP)
 
-        idx = fingers["index"]
-        mid = fingers["middle"]
-        ring = fingers["ring"]
-        pinky = fingers["pinky"]
+        # Debounced posture: the mode only switches once the same reading
+        # has held for a couple of frames, so a single misread finger from
+        # the camera cannot flip the mode for an instant. The raw fingers
+        # dict still goes into the result untouched, for live HUD feedback.
+        raw_posture = classify_posture(fingers)
+        posture = self.posture.feed(raw_posture)
 
-        palm = idx and mid and ring and pinky
-        fist = (not idx) and (not mid) and (not ring) and (not pinky)
-        two_finger = idx and mid and (not ring) and (not pinky)
-        move_posture = idx and (not mid)
+        palm = posture == "palm"
+        fist = posture == "fist"
+        two_finger = posture == "two_finger"
+        move_posture = posture == "move"
 
         # Smoothed live cursor from the index fingertip, every frame, so the
         # filters stay warm and a pre-pinch position is always available.

@@ -19,8 +19,9 @@ The whole point is that it stays usable. A jittery cursor is worthless, so the s
 - One Euro Filter smoothing so the cursor is calm when still and responsive when you move.
 - Click freeze: the cursor locks in place the instant you start a pinch, so clicks land exactly where you aimed.
 - A clean gesture vocabulary: move, left click, double click, drag, right click, scroll, and pause.
-- Debounced state machines so a held pinch never machine guns clicks.
-- An interactive onboarding tutorial that teaches every gesture before the mouse is ever controlled.
+- Debounced state machines so a held pinch never machine guns clicks, and a debounced posture reading so one noisy camera frame can never misfire the mode.
+- An interactive onboarding tutorial that teaches every gesture before the mouse is ever controlled, replayable any time with T.
+- A single always visible hint line that tells you what to do right now in plain English, so you never have to remember the gesture list.
 - A polished dark HUD with mode, finger indicators, a pinch meter, and a control pill.
 - A hard safety layer: the keyboard can always pause control, even while the hand is driving the mouse.
 - Fully testable core: the mouse is behind a backend interface, so the gesture logic runs headless with a fake mouse.
@@ -40,7 +41,7 @@ On the first run an interactive tutorial teaches you every gesture one at a time
 - Press S at any time to skip the tutorial.
 - Add `--skip-tutorial` to go straight to the app (it opens with control off, press C to take over).
 
-Once in the app, control starts OFF for safety. A banner tells you to press C to start driving your mouse.
+Once in the app, control starts OFF for safety. A single line at the top of the screen always tells you exactly what to do next: show your hand, press C, pinch to click, move to scroll, and so on. You never have to memorize anything or hunt for a menu. Forgot how a gesture works? Press T at any time to replay the full tutorial, mouse safely disconnected, for as long as you like.
 
 ## Gestures
 
@@ -62,6 +63,7 @@ Once in the app, control starts OFF for safety. A banner tells you to press C to
 | SPACE | Finish the tutorial and take control of your mouse |
 | S | Skip the tutorial |
 | C | Toggle control on and off |
+| T | Replay the full tutorial any time (mouse stays safe until you finish) |
 | Ctrl + Alt + H | Global hotkey to toggle control, works even when the cursor is being driven |
 | F | Toggle fullscreen |
 | H | Toggle the on screen gesture legend |
@@ -75,6 +77,8 @@ Once in the app, control starts OFF for safety. A banner tells you to press C to
 - The mapped screen coordinates are run through a One Euro Filter (one instance per axis). This is the single most important piece. It removes jitter when the hand is still and keeps lag low when the hand moves.
 - Click precision comes from a freeze: the moment a pinch begins the cursor is pinned to its pre pinch position, so the finger motion of pinching cannot drag the cursor off target. It unfreezes when the pinch ends or a drag begins.
 - A gesture state machine turns postures and pinch edges into discrete actions, with cooldowns and hysteresis so nothing spams. The state machine is pure logic and does not touch the mouse. The main loop applies its output to a mouse backend.
+- Posture debouncing: the four finger up or down readings are classified into a posture (point, two fingers, palm, fist) every frame, but that reading only takes effect once the same posture has held for two consecutive frames. A single frame where the camera misreads a finger cannot flip the mode; a real gesture change still lands within about 60ms, well under what a person can notice.
+- A plain English hint line (`hints.py`) is computed fresh every frame from the current mode, whether a hand is visible, and whether control is on. It always shows the single most useful next step, so a non technical user is never stuck guessing.
 - Safety: control can always be paused from the keyboard, including a global Ctrl + Alt + H hotkey, so a hand driven cursor can never trap you.
 
 ## Tuning
@@ -84,6 +88,7 @@ Once in the app, control starts OFF for safety. A banner tells you to press C to
 | `--smooth` | One Euro min_cutoff. Lower is smoother but laggier, higher is snappier but noisier. Default 1.2 |
 | `--beta` | One Euro beta. Higher cuts lag on fast motion. Default 0.03 |
 | `--margin` | Active region margin. Smaller means a smaller hand motion covers the screen. Default 0.15 |
+| `--posture-hold` | Frames a posture must hold before the mode switches. Higher rejects more camera noise but reacts slightly slower. Default 2 |
 | `--debug` | Show raw numbers (pinch ratio, target, finger bits) on the HUD |
 | `--no-control` | Run the full pipeline and HUD but do not move the real mouse, so you can observe first |
 | `--camera` | Camera index, default 0 |

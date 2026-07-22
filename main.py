@@ -112,6 +112,8 @@ def build_parser():
                         help="One Euro beta, higher reduces lag on fast motion")
     parser.add_argument("--margin", type=float, default=0.15,
                         help="active region margin, smaller needs bigger hand motion")
+    parser.add_argument("--posture-hold", type=int, default=2,
+                        help="frames a posture must hold before the mode switches, higher is steadier but slower")
     parser.add_argument("--debug", action="store_true",
                         help="show raw numbers on the HUD")
     parser.add_argument("--no-control", action="store_true",
@@ -143,6 +145,7 @@ def main():
         margin=args.margin,
         min_cutoff=args.smooth,
         beta=args.beta,
+        posture_hold_frames=args.posture_hold,
     )
 
     mp_hands = mp.solutions.hands
@@ -168,6 +171,7 @@ def main():
         "margin": args.margin,
         "pinch_on": engine.pinch_on,
         "pinch_off": engine.pinch_off,
+        "posture_hold": args.posture_hold,
     }
 
     # Gesture legend shows on first run, then auto hides so the demo stays
@@ -182,7 +186,10 @@ def main():
     print("Gestures: point = move, pinch = click, hold pinch = drag,")
     print("          two fingers = scroll, two + pinch = right click,")
     print("          open palm = pause, fist = idle.")
-    print("Keys: C control, F fullscreen, H legend, Q quit. Global pause Ctrl+Alt+H.")
+    print("Forgot a gesture? A hint always shows on screen telling you what")
+    print("to do, and pressing T replays the full tutorial any time.")
+    print("Keys: C control, T tutorial, H legend, F fullscreen, Q quit.")
+    print("Global pause Ctrl+Alt+H.")
 
     # Global hotkey so the user can always regain the mouse.
     listener = None
@@ -269,7 +276,7 @@ def main():
                 if legend_on and auto_hide_at is not None and now >= auto_hide_at:
                     legend_on = False
                 hud.draw_hud(frame, result, control_state, fps, None,
-                             debug=args.debug, show_legend=legend_on,
+                             has_hand=has_hand, debug=args.debug, show_legend=legend_on,
                              pinch_on=engine.pinch_on, pinch_off=engine.pinch_off,
                              tunables=tunables)
 
@@ -291,6 +298,13 @@ def main():
             elif (not in_tutorial) and key == ord("c"):
                 control_on = toggle_control(control_on, engine, backend)
                 observing = False
+            elif (not in_tutorial) and key == ord("t"):
+                # Let a user who has forgotten the gestures practice again
+                # any time, without restarting the app. The mouse is safe
+                # (control forced off) for the whole replay, same as the
+                # first run tutorial.
+                tutorial = TutorialFlow()
+                print("Tutorial restarted. Your mouse is safe until you finish.")
             elif (not in_tutorial) and key == ord("h"):
                 legend_on = not legend_on
                 auto_hide_at = None
