@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 .venv/
+.vscode/
 FILMING.md
 LINKEDIN_POST.md
 INSTAGRAM_POST.md
