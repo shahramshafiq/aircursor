@@ -20,7 +20,7 @@ from gestures import GestureEngine, PostureDebouncer, classify_posture
 from backends import FakeBackend
 import hand
 import hints
-from main import process_frame, toggle_control, apply_result, build_parser
+from main import process_frame, toggle_control, apply_result, build_parser, note_click
 from tutorial import TutorialFlow
 
 PASSED = 0
@@ -295,6 +295,16 @@ def test_posture_hold_flag():
     check("the custom value reaches the debouncer", engine.posture.need == 5)
 
 
+def test_pinch_threshold_flags():
+    args = build_parser().parse_args([])
+    check("pinch-on defaults to 0.35, matching the engine default", args.pinch_on == 0.35)
+    check("pinch-off defaults to 0.5, matching the engine default", args.pinch_off == 0.5)
+    args = build_parser().parse_args(["--pinch-on", "0.45", "--pinch-off", "0.6"])
+    engine = GestureEngine((1920, 1080), pinch_on=args.pinch_on, pinch_off=args.pinch_off)
+    check("a looser --pinch-on reaches the engine", engine.pinch_on == 0.45)
+    check("a looser --pinch-off reaches the engine", engine.pinch_off == 0.6)
+
+
 # ---------- Status hints ----------
 
 def test_status_hints():
@@ -388,6 +398,97 @@ def test_drag_no_click():
     check("drag presses left", has_press)
     check("drag releases left", has_release)
     check("drag does not emit a click", not has_click)
+
+
+def test_click_survives_finger_curl_mid_pinch():
+    # Reproduces the real world failure this fix targets: physically
+    # pinching curls the index finger toward the thumb, which can make it
+    # read as "down" for a frame or two mid gesture. Without the posture
+    # lock, that curl reclassifies MOVE away to IDLE mid pinch, the engine
+    # clears pinch_active and frozen, and the click never fires when the
+    # fingers later release. The lock must keep the click alive through it.
+    engine = fresh_engine()
+    backend = FakeBackend()
+    t = 0.0
+    for _ in range(3):
+        process_frame(engine, backend, make_hand(index_tip=(0.5, 0.5)), t, True)
+        t = t + 0.03
+
+    process_frame(engine, backend, make_hand(pinch=True, index_tip=(0.5, 0.5)), t, True)
+    t = t + 0.03
+
+    curled = make_hand(index_up=False, middle_up=False, ring_up=False, pinky_up=False,
+                        pinch=True, index_tip=(0.5, 0.5))
+    process_frame(engine, backend, curled, t, True)
+    t = t + 0.03
+    process_frame(engine, backend, curled, t, True)
+    t = t + 0.03
+
+    process_frame(engine, backend, make_hand(pinch=False, index_tip=(0.5, 0.5)), t, True)
+
+    left_clicks = 0
+    for call in backend.calls:
+        if call[0] == "click" and call[1] == "left":
+            left_clicks = left_clicks + 1
+    check("a click survives the index finger curling mid pinch", left_clicks == 1)
+
+
+def test_drag_survives_finger_curl_mid_pinch():
+    # Same real world curl, but during a hold to drag instead of a tap.
+    engine = fresh_engine()
+    backend = FakeBackend()
+    t = 0.0
+    for _ in range(3):
+        process_frame(engine, backend, make_hand(index_tip=(0.5, 0.5)), t, True)
+        t = t + 0.03
+
+    process_frame(engine, backend, make_hand(pinch=True, index_tip=(0.5, 0.5)), t, True)
+    t = t + 0.03
+
+    curled = make_hand(index_up=False, middle_up=False, ring_up=False, pinky_up=False,
+                        pinch=True, index_tip=(0.55, 0.55))
+    for _ in range(6):
+        process_frame(engine, backend, curled, t, True)
+        t = t + 0.1
+
+    process_frame(engine, backend, make_hand(pinch=False, index_tip=(0.6, 0.6)), t, True)
+
+    has_press = ("press", "left") in backend.calls
+    has_release = ("release", "left") in backend.calls
+    check("drag still presses left despite the curl", has_press)
+    check("drag still releases left despite the curl", has_release)
+
+
+def test_right_click_survives_finger_curl_mid_pinch():
+    # Same curl during a two finger (right click) pinch: the middle
+    # finger can also dip during the pinch motion, not just the index.
+    engine = fresh_engine()
+    backend = FakeBackend()
+    t = 0.0
+    for _ in range(3):
+        h = make_hand(index_up=True, middle_up=True, index_tip=(0.5, 0.5))
+        process_frame(engine, backend, h, t, True)
+        t = t + 0.03
+
+    process_frame(engine, backend, make_hand(index_up=True, middle_up=True, pinch=True,
+                                             index_tip=(0.5, 0.5)), t, True)
+    t = t + 0.03
+
+    curled = make_hand(index_up=False, middle_up=False, ring_up=False, pinky_up=False,
+                        pinch=True, index_tip=(0.5, 0.5))
+    process_frame(engine, backend, curled, t, True)
+    t = t + 0.03
+    process_frame(engine, backend, curled, t, True)
+    t = t + 0.03
+
+    process_frame(engine, backend, make_hand(index_up=True, middle_up=True, pinch=False,
+                                             index_tip=(0.5, 0.5)), t, True)
+
+    right_clicks = 0
+    for call in backend.calls:
+        if call[0] == "click" and call[1] == "right":
+            right_clicks = right_clicks + 1
+    check("a right click survives finger curl mid pinch", right_clicks == 1)
 
 
 def test_double_click():
@@ -580,6 +681,22 @@ def _res(mode="IDLE", actions=None):
             "pinch_ratio": 0.0, "target": None}
 
 
+# ---------- Click confirmation ----------
+
+def test_note_click():
+    check("a left click reports LEFT CLICK",
+          note_click([("left_click",)], "LEFT CLICK") == "LEFT CLICK")
+    check("a left click during the double click window reports DOUBLE CLICK",
+          note_click([("left_click",)], "DOUBLE CLICK") == "DOUBLE CLICK")
+    check("a right click reports RIGHT CLICK",
+          note_click([("right_click",)], "RIGHT CLICK") == "RIGHT CLICK")
+    check("no actions this frame reports nothing", note_click([], "MOVE") is None)
+    check("a scroll action alone does not count as a click",
+          note_click([("scroll", 1)], "SCROLL") is None)
+    check("a click among other actions is still found",
+          note_click([("scroll", 1), ("left_click",)], "LEFT CLICK") == "LEFT CLICK")
+
+
 def test_tutorial_flow():
     tf = TutorialFlow()
 
@@ -673,10 +790,14 @@ def run_all():
     test_engine_still_switches_on_a_real_change()
     test_debounce_resets_when_hand_disappears()
     test_posture_hold_flag()
+    test_pinch_threshold_flags()
     test_status_hints()
     test_move_tracks_no_clicks()
     test_quick_pinch_click_frozen()
     test_drag_no_click()
+    test_click_survives_finger_curl_mid_pinch()
+    test_drag_survives_finger_curl_mid_pinch()
+    test_right_click_survives_finger_curl_mid_pinch()
     test_double_click()
     test_right_click()
     test_scroll_sign()
@@ -686,6 +807,7 @@ def run_all():
     test_toggle_off_mid_drag_releases()
     test_apply_result_off_is_zero_action()
     test_backend_failure_does_not_propagate()
+    test_note_click()
     test_tutorial_flow()
     test_tutorial_skip()
     test_tutorial_blocks_the_mouse()

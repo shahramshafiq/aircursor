@@ -12,12 +12,20 @@ hotkey, so a hand driven cursor can never trap the user.
 
 import argparse
 import sys
+import threading
 import time
 
 from backends import PynputBackend
 from gestures import GestureEngine
 from tutorial import TutorialFlow
 import hud
+
+try:
+    import winsound
+except ImportError:
+    winsound = None
+
+CLICK_FLASH_S = 0.6
 
 
 def apply_result(result, backend, control_on):
@@ -67,6 +75,36 @@ def apply_result(result, backend, control_on):
             pass
 
 
+def note_click(actions, mode):
+    """Pick a human readable label out of this frame's actions, if any.
+
+    A click is easy to miss: the mode string only says LEFT CLICK for the
+    single frame it happened on, about 30ms, far too fast to read. This
+    turns that instant into a label the caller can hold on screen (and
+    beep for) for as long as it likes. Returns None on a frame with no
+    click type action, so callers only react when something actually fired.
+    """
+    for action in actions:
+        if action[0] == "left_click":
+            return "DOUBLE CLICK" if mode == "DOUBLE CLICK" else "LEFT CLICK"
+        if action[0] == "right_click":
+            return "RIGHT CLICK"
+    return None
+
+
+def beep_for(label):
+    """A short, distinct beep per click type. Never raises: no sound card,
+    no winsound (non Windows), or a busy audio device must not touch the
+    capture loop. Runs on its own thread so the beep cannot add lag."""
+    if winsound is None:
+        return
+    freq = 700 if label == "RIGHT CLICK" else 1000
+    try:
+        threading.Thread(target=winsound.Beep, args=(freq, 70), daemon=True).start()
+    except Exception:
+        pass
+
+
 def toggle_control(control_on, engine, backend):
     """Flip control on or off, returning the new state.
 
@@ -114,6 +152,10 @@ def build_parser():
                         help="active region margin, smaller needs bigger hand motion")
     parser.add_argument("--posture-hold", type=int, default=2,
                         help="frames a posture must hold before the mode switches, higher is steadier but slower")
+    parser.add_argument("--pinch-on", type=float, default=0.35,
+                        help="thumb to index distance (as a share of hand size) that registers a pinch, higher is easier to trigger")
+    parser.add_argument("--pinch-off", type=float, default=0.5,
+                        help="thumb to index distance that releases a pinch, must be higher than --pinch-on")
     parser.add_argument("--debug", action="store_true",
                         help="show raw numbers on the HUD")
     parser.add_argument("--no-control", action="store_true",
@@ -146,6 +188,8 @@ def main():
         min_cutoff=args.smooth,
         beta=args.beta,
         posture_hold_frames=args.posture_hold,
+        pinch_on=args.pinch_on,
+        pinch_off=args.pinch_off,
     )
 
     mp_hands = mp.solutions.hands
@@ -213,6 +257,13 @@ def main():
     fps = 0.0
     exit_code = 0
 
+    # A confirmed click stays visible and audible for CLICK_FLASH_S, since
+    # the mode label alone only shows it for a single frame, far too fast
+    # to notice. This is what makes a working click actually feel like it
+    # worked.
+    click_label = None
+    click_started = 0.0
+
     try:
         while True:
             ok, frame = cap.read()
@@ -254,6 +305,16 @@ def main():
             result = process_frame(engine, backend, landmarks, now, applied_control)
             has_hand = landmarks is not None
 
+            # Outside the tutorial (which has its own NICE! celebration),
+            # a fresh click gets a beep and an on screen flash that lasts
+            # well beyond the single frame the mode label shows it for.
+            if not in_tutorial:
+                clicked = note_click(result.get("actions", []), result.get("mode"))
+                if clicked is not None:
+                    click_label = clicked
+                    click_started = now
+                    beep_for(clicked)
+
             # Cursor dot follows the fingertip in every mode (visual only).
             dot_target = result.get("target", None)
             if dot_target is None:
@@ -279,6 +340,12 @@ def main():
                              has_hand=has_hand, debug=args.debug, show_legend=legend_on,
                              pinch_on=engine.pinch_on, pinch_off=engine.pinch_off,
                              tunables=tunables)
+                if click_label is not None:
+                    elapsed = now - click_started
+                    if elapsed < CLICK_FLASH_S:
+                        hud.draw_click_flash(frame, dot, click_label, elapsed, CLICK_FLASH_S)
+                    else:
+                        click_label = None
 
             cv2.imshow(window, frame)
             key = cv2.waitKey(1) & 0xFF

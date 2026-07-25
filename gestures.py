@@ -113,6 +113,7 @@ class GestureEngine:
         self.pinch_start = 0.0
         self.frozen = None
         self.dragging = False
+        self.locked_posture = None
 
         self.last_smoothed = (screen_w * 0.5, screen_h * 0.5)
         self.last_click_time = -1000.0
@@ -143,18 +144,51 @@ class GestureEngine:
             self.pinch_active = False
             self.frozen = None
             self.scroll_ref_y = None
+            self.locked_posture = None
             self.posture.reset()
             return result
 
         fingers = hand.fingers_up(landmarks)
         ratio = hand.pinch_ratio(landmarks, hand.THUMB_TIP, hand.INDEX_TIP)
+        raw_posture = classify_posture(fingers)
+
+        # Pinch hysteresis, independent of posture classification.
+        was_pinching = self.pinch_active
+        pinch_began = False
+        pinch_ended = False
+        if self.pinch_active:
+            if ratio > self.pinch_off:
+                self.pinch_active = False
+                pinch_ended = True
+        else:
+            if ratio < self.pinch_on:
+                self.pinch_active = True
+                pinch_began = True
 
         # Debounced posture: the mode only switches once the same reading
         # has held for a couple of frames, so a single misread finger from
         # the camera cannot flip the mode for an instant. The raw fingers
         # dict still goes into the result untouched, for live HUD feedback.
-        raw_posture = classify_posture(fingers)
-        posture = self.posture.feed(raw_posture)
+        #
+        # Critical exception: physically pinching curls the index finger
+        # toward the thumb, which can make it read as "down" mid gesture.
+        # Without a lock, that curl reclassifies the posture away from
+        # MOVE or SCROLL and silently drops the click or drag, which is
+        # exactly the "clicking does not work" failure this fixes. So for
+        # the whole duration of a pinch, including its release frame, the
+        # posture is frozen to whatever was confirmed the instant before
+        # the pinch began, and only re-evaluated once the pinch is over.
+        if was_pinching:
+            posture = self.locked_posture
+            if pinch_ended:
+                self.locked_posture = None
+                self.posture.reset()
+        else:
+            pre_confirmed = self.posture.confirmed
+            posture = self.posture.feed(raw_posture)
+            if pinch_began:
+                self.locked_posture = pre_confirmed if pre_confirmed is not None else posture
+                posture = self.locked_posture
 
         palm = posture == "palm"
         fist = posture == "fist"
@@ -168,18 +202,6 @@ class GestureEngine:
         smooth_x = self.euro_x.filter(mapped_x, now)
         smooth_y = self.euro_y.filter(mapped_y, now)
         smoothed_live = (smooth_x, smooth_y)
-
-        # Pinch edges with hysteresis.
-        pinch_began = False
-        pinch_ended = False
-        if self.pinch_active:
-            if ratio > self.pinch_off:
-                self.pinch_active = False
-                pinch_ended = True
-        else:
-            if ratio < self.pinch_on:
-                self.pinch_active = True
-                pinch_began = True
 
         result = self._blank_result("IDLE", ratio, fingers)
 

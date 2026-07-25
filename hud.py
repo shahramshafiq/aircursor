@@ -158,6 +158,37 @@ def draw_tutorial(frame, info, has_hand):
     return frame
 
 
+def draw_click_flash(frame, dot, label, elapsed, duration):
+    """A big, hard to miss confirmation that a click just fired.
+
+    A click is the most important single moment in this app, and without
+    this it is nearly invisible: the mode label only shows LEFT CLICK for
+    the one frame it happened on, well under the time a human eye needs to
+    notice text. This stays on screen for `duration` seconds, fading out,
+    and puts an expanding ring at the exact spot the click landed (the
+    frozen cursor position), so the user can see both that it worked and
+    precisely where.
+    """
+    share = 1.0 - (elapsed / duration)
+    if share <= 0.0:
+        return
+    color = ACCENT if label == "RIGHT CLICK" else GREEN
+
+    if dot is not None:
+        radius = int(14 + (1.0 - share) * 30)
+        thickness = max(1, int(round(4 * share)))
+        cv2.circle(frame, (int(dot[0]), int(dot[1])), radius, color, thickness, cv2.LINE_AA)
+
+    h, w = frame.shape[:2]
+    (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_DUPLEX, 0.9, 2)
+    bx1 = (w - tw) // 2 - 28
+    bx2 = (w + tw) // 2 + 28
+    by = 160
+    _panel(frame, bx1, by, bx2, by + 50, alpha=0.75 * share)
+    cv2.putText(frame, label, ((w - tw) // 2, by + 34),
+                cv2.FONT_HERSHEY_DUPLEX, 0.9, color, 2, cv2.LINE_AA)
+
+
 def draw_hud(frame, result, control_state, fps, mapped_dot, has_hand=True,
              debug=False, show_legend=True, pinch_on=None, pinch_off=None,
              tunables=None):

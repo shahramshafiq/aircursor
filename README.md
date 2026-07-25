@@ -18,6 +18,8 @@ The whole point is that it stays usable. A jittery cursor is worthless, so the s
 - Real OS cursor control from a single webcam, no gloves or markers.
 - One Euro Filter smoothing so the cursor is calm when still and responsive when you move.
 - Click freeze: the cursor locks in place the instant you start a pinch, so clicks land exactly where you aimed.
+- A posture lock during every pinch: pinching naturally curls your finger, which used to be able to flip the mode mid gesture and silently drop the click. The mode is now frozen for the whole pinch, so the click always lands.
+- A click confirmation you cannot miss: a beep and an on screen flash mark every click, right click, and double click for over half a second, not just the single video frame the old mode label showed it for.
 - A clean gesture vocabulary: move, left click, double click, drag, right click, scroll, and pause.
 - Debounced state machines so a held pinch never machine guns clicks, and a debounced posture reading so one noisy camera frame can never misfire the mode.
 - An interactive onboarding tutorial that teaches every gesture before the mouse is ever controlled, replayable any time with T.
@@ -78,6 +80,8 @@ Once in the app, control starts OFF for safety. A single line at the top of the 
 - Click precision comes from a freeze: the moment a pinch begins the cursor is pinned to its pre pinch position, so the finger motion of pinching cannot drag the cursor off target. It unfreezes when the pinch ends or a drag begins.
 - A gesture state machine turns postures and pinch edges into discrete actions, with cooldowns and hysteresis so nothing spams. The state machine is pure logic and does not touch the mouse. The main loop applies its output to a mouse backend.
 - Posture debouncing: the four finger up or down readings are classified into a posture (point, two fingers, palm, fist) every frame, but that reading only takes effect once the same posture has held for two consecutive frames. A single frame where the camera misreads a finger cannot flip the mode; a real gesture change still lands within about 60ms, well under what a person can notice.
+- Posture locking during a pinch: bringing your thumb and index finger together naturally curls the index finger, which can make it briefly read as "down". Left unguarded, that curl reclassifies the posture away from MOVE (or the two finger posture) mid pinch, and the engine clears its pinch tracking before the click ever fires. This was the real reason clicking felt unreliable. The fix: the moment a pinch begins, the posture is frozen to whatever was confirmed right before the curl started, for the whole gesture including the release, and only re-evaluated once the pinch is fully over. This also protects drags and right clicks, since they use the same lock.
+- Click confirmation: a fresh left click, right click, or double click plays a short beep (a different pitch for right click) and shows a large fading badge with an expanding ring at the exact spot the click landed, for over half a second. The one frame MODE label was too fast to notice; this makes a working click actually feel like it worked.
 - A plain English hint line (`hints.py`) is computed fresh every frame from the current mode, whether a hand is visible, and whether control is on. It always shows the single most useful next step, so a non technical user is never stuck guessing.
 - Safety: control can always be paused from the keyboard, including a global Ctrl + Alt + H hotkey, so a hand driven cursor can never trap you.
 
@@ -89,6 +93,8 @@ Once in the app, control starts OFF for safety. A single line at the top of the 
 | `--beta` | One Euro beta. Higher cuts lag on fast motion. Default 0.03 |
 | `--margin` | Active region margin. Smaller means a smaller hand motion covers the screen. Default 0.15 |
 | `--posture-hold` | Frames a posture must hold before the mode switches. Higher rejects more camera noise but reacts slightly slower. Default 2 |
+| `--pinch-on` | Thumb to index distance (share of hand size) that registers a pinch. Higher makes clicking easier to trigger if your natural pinch does not get very close. Default 0.35 |
+| `--pinch-off` | Distance that releases a pinch. Must stay above `--pinch-on`. Default 0.5 |
 | `--debug` | Show raw numbers (pinch ratio, target, finger bits) on the HUD |
 | `--no-control` | Run the full pipeline and HUD but do not move the real mouse, so you can observe first |
 | `--camera` | Camera index, default 0 |
@@ -104,11 +110,13 @@ Once in the app, control starts OFF for safety. A single line at the top of the 
 
 ## Tests
 
-Headless, no camera, no window, no real mouse.
+Headless, no camera, no window, no real mouse. If a `.venv` folder exists in the project, use its Python; otherwise `py -3.12` works directly.
 
 ```
 py -3.12 tests/smoke_test.py
 ```
+
+106 checks, four of which (`*_survives_finger_curl_mid_pinch`) exist specifically to prove clicking, dragging, and right clicking all still work even when a pinch curls the finger enough to momentarily misread the posture. They fail on the old code and pass on the fixed code; that is what proves this was a real bug, not a guess.
 
 ## Notes
 
