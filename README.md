@@ -1,124 +1,153 @@
+<div align="center">
+
 # AirCursor
 
-A touch free mouse. Control the real OS cursor with your bare hand through a webcam.
+Control your computer's mouse with your bare hand through a webcam, with no touch and no extra hardware.
 
-## Why this matters
+![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)
+![MediaPipe](https://img.shields.io/badge/MediaPipe-0.10.21-0097A7?style=flat-square&logo=google&logoColor=white)
+![OpenCV](https://img.shields.io/badge/OpenCV-Computer%20Vision-5C3EE8?style=flat-square&logo=opencv&logoColor=white)
+![Platform](https://img.shields.io/badge/Platform-Windows-0078D4?style=flat-square&logo=windows&logoColor=white)
 
-Not every situation lets you touch a mouse. AirCursor is built as a real accessibility and convenience product:
+</div>
 
-- Hands free control for people with limited mobility or repetitive strain injury.
-- Sterile settings (surgery prep, labs, kitchens) where touching hardware is a problem.
-- Presentations and demos where you want to drive a screen from across the room.
-- A clean, camera only input path that needs no wearable and no extra hardware.
+## Overview
 
-The whole point is that it stays usable. A jittery cursor is worthless, so the smoothing, the click precision, and the anti spam logic are treated as the core of the product, not extras.
+AirCursor is a touch-free mouse. It reads your hand from a single webcam with MediaPipe Hands, turns finger postures and pinches into mouse actions, and drives the real OS cursor. It is aimed at situations where touching a mouse is impractical, such as limited mobility, sterile environments, or presenting from across a room. A jittery cursor is unusable, so smoothing, click precision and anti-spam logic are treated as the core of the project.
 
-## Features
+## Key Features
 
-- Real OS cursor control from a single webcam, no gloves or markers.
-- One Euro Filter smoothing so the cursor is calm when still and responsive when you move.
-- Click freeze: the cursor locks in place the instant you start a pinch, so clicks land exactly where you aimed.
-- A posture lock during every pinch: pinching naturally curls your finger, which used to be able to flip the mode mid gesture and silently drop the click. The mode is now frozen for the whole pinch, so the click always lands.
-- A click confirmation you cannot miss: a beep and an on screen flash mark every click, right click, and double click for over half a second, not just the single video frame the old mode label showed it for.
-- A clean gesture vocabulary: move, left click, double click, drag, right click, scroll, and pause.
-- Debounced state machines so a held pinch never machine guns clicks, and a debounced posture reading so one noisy camera frame can never misfire the mode.
-- An interactive onboarding tutorial that teaches every gesture before the mouse is ever controlled, replayable any time with T.
-- A single always visible hint line that tells you what to do right now in plain English, so you never have to remember the gesture list.
-- A polished dark HUD with mode, finger indicators, a pinch meter, and a control pill.
-- A hard safety layer: the keyboard can always pause control, even while the hand is driving the mouse.
-- Fully testable core: the mouse is behind a backend interface, so the gesture logic runs headless with a fake mouse.
+- **Real OS cursor control** from one webcam, with no gloves or markers. The mouse is moved through `pynput`.
+- **One Euro Filter smoothing** (one filter per axis), so the cursor stays calm when your hand is still and responsive when it moves.
+- **Click freeze:** the cursor is pinned to its pre-pinch position the moment a pinch starts, so the finger motion of pinching cannot pull the click off target.
+- **Posture lock during a pinch:** the confirmed posture is frozen for the whole pinch, so the natural finger curl of pinching cannot flip the mode and drop the click. A posture is also debounced and only takes effect after it holds for a set number of frames (default 2).
+- **Full mouse vocabulary:** move, left click, double click, drag, right click, scroll and pause, with cooldowns and hysteresis so a held pinch never repeats clicks.
+- **Interactive onboarding tutorial** that teaches each gesture with the mouse disconnected. It can be replayed at any time with `T`.
+- **Safe by default:** control starts OFF, and a keyboard pause (`C` or the global `Ctrl+Alt+H` hotkey) always works, including mid-drag, where the held button is released first.
+- **Live feedback HUD:** current mode, finger indicators, a pinch meter with click and release marks, a control status pill, a plain-English hint line, and a beep plus on-screen flash on every click.
 
-## Quick start
+## Tech Stack
 
-Windows 11, Python 3.12.
+| Area | Technology |
+|---|---|
+| Language | Python 3.12 |
+| Hand tracking | MediaPipe Hands 0.10.21 (classic `mp.solutions.hands` API, 21 landmarks per frame) |
+| Video and HUD | OpenCV (DirectShow capture, on-screen display) |
+| Mouse and hotkey | pynput (cursor, clicks, scroll, global hotkey) |
+| Smoothing | One Euro Filter (Casiez, Roussel, Vogel 2012), implemented in `euro_filter.py` |
+| Screen size | screeninfo, with a tkinter fallback |
+| Numerics | NumPy, pinned below 2 for MediaPipe compatibility |
+| Click sound | `winsound` (Windows standard library) |
+| Testing | Plain Python smoke tests with a fake mouse backend |
 
+## Project Structure
+
+```text
+aircursor/
+  main.py              Entry point: webcam loop, key handling, safety toggles, CLI flags
+  gestures.py          Gesture state machine: posture debounce, pinch, click, drag, scroll
+  hand.py              MediaPipe landmark helpers: finger up/down state, pinch ratio
+  euro_filter.py       One Euro Filter used to smooth the fingertip position
+  mapping.py           Maps the inner active region of the frame to full screen coordinates
+  backends.py          Mouse backend interface, pynput backend, fake backend for tests
+  tutorial.py          Onboarding tutorial state machine
+  hints.py             Plain-English "what to do now" hint line
+  hud.py               OpenCV drawing: mode, fingers, pinch meter, legend, click flash
+  tests/
+    smoke_test.py      Headless tests: no camera, no window, no real mouse
+  requirements.txt     Pinned dependencies
 ```
-cd C:\Users\ssg79\OneDrive\Desktop\AirCursor
+
+## Getting Started
+
+### Prerequisites
+
+- Windows (camera capture uses DirectShow and the click beep uses `winsound`)
+- Python 3.12
+- A webcam
+
+No environment variables are required.
+
+### Installation
+
+```bash
+git clone https://github.com/shahramshafiq/aircursor.git
+cd aircursor
 py -3.12 -m pip install -r requirements.txt
+```
+
+### Run
+
+```bash
 py -3.12 main.py
 ```
 
-On the first run an interactive tutorial teaches you every gesture one at a time. Your mouse is NOT controlled during the tutorial, so you can practice safely. It walks you through: show your hand, point to move, pinch to click, two fingers to scroll, open palm to pause. When you finish, press SPACE to take control of your mouse.
+On first run an interactive tutorial walks through every gesture: show your hand, point to move, pinch to click, two fingers to scroll, open palm to pause. The mouse is NOT controlled during the tutorial. When it finishes, press `SPACE` to take control.
 
-- Press S at any time to skip the tutorial.
-- Add `--skip-tutorial` to go straight to the app (it opens with control off, press C to take over).
+## Usage
 
-Once in the app, control starts OFF for safety. A single line at the top of the screen always tells you exactly what to do next: show your hand, press C, pinch to click, move to scroll, and so on. You never have to memorize anything or hunt for a menu. Forgot how a gesture works? Press T at any time to replay the full tutorial, mouse safely disconnected, for as long as you like.
+### Gestures
 
-## Gestures
-
-| Gesture | Posture | What it does |
+| Gesture | Posture | Action |
 |---|---|---|
-| Move | Index up, middle down | Cursor follows your index fingertip |
-| Left click | Move posture, quick thumb to index pinch and release | Single click at the frozen position |
-| Double click | Move posture, two quick pinch taps | Two clicks, which the OS reads as a double click |
-| Drag | Move posture, pinch and hold past 0.35s | Presses the button, drags while held, releases on unpinch |
-| Right click | Two fingers up (index plus middle), pinch tap | Single right click |
-| Scroll | Two fingers up, move the hand up or down | Scrolls, up is positive, with a deadzone so it steps smoothly |
-| Pause | Open palm (all four fingers up) | Freezes the cursor, no actions |
-| Idle | Fist (all four fingers down) | Freezes the cursor, no actions |
+| Move | Index finger up, middle finger down | Cursor follows the index fingertip |
+| Left click | Move posture, quick thumb-to-index pinch and release | Click at the frozen position |
+| Double click | Move posture, two quick pinch taps | Two clicks that the OS reads as a double click |
+| Drag | Move posture, pinch and hold longer than 0.35 s | Presses the button, drags while held, releases on unpinch |
+| Right click | Index and middle fingers up, pinch tap | Single right click |
+| Scroll | Index and middle fingers up, move the hand up or down | Scrolls in steps, with a deadzone |
+| Pause | Open palm (all four fingers up) | Cursor frozen, no actions |
+| Idle | Fist (all four fingers down) | Cursor frozen, no actions |
 
-## Controls
+### Keyboard controls
 
 | Key | Action |
 |---|---|
-| SPACE | Finish the tutorial and take control of your mouse |
-| S | Skip the tutorial |
-| C | Toggle control on and off |
-| T | Replay the full tutorial any time (mouse stays safe until you finish) |
-| Ctrl + Alt + H | Global hotkey to toggle control, works even when the cursor is being driven |
-| F | Toggle fullscreen |
-| H | Toggle the on screen gesture legend |
-| Q or ESC | Quit |
+| `SPACE` | Finish the tutorial and take control of the mouse |
+| `S` | Skip the tutorial |
+| `C` | Toggle control on and off |
+| `T` | Replay the tutorial (the mouse stays disconnected until you finish) |
+| `Ctrl + Alt + H` | Global hotkey to toggle control |
+| `F` | Toggle fullscreen |
+| `H` | Toggle the on-screen gesture legend |
+| `Q` or `Esc` | Quit |
 
-## How it works
+### Command-line options
 
-- MediaPipe Hands (classic solutions API, `mp.solutions.hands`) finds 21 hand landmarks per frame from the mirrored webcam image.
-- Finger up and down states come from comparing each fingertip to its pip joint. A thumb to index pinch is measured as a distance normalized by hand size, so it works the same near or far from the camera.
-- The chosen fingertip is mapped from an inner active region of the frame to the full screen, so you never have to reach the edge of view to reach the edge of the screen.
-- The mapped screen coordinates are run through a One Euro Filter (one instance per axis). This is the single most important piece. It removes jitter when the hand is still and keeps lag low when the hand moves.
-- Click precision comes from a freeze: the moment a pinch begins the cursor is pinned to its pre pinch position, so the finger motion of pinching cannot drag the cursor off target. It unfreezes when the pinch ends or a drag begins.
-- A gesture state machine turns postures and pinch edges into discrete actions, with cooldowns and hysteresis so nothing spams. The state machine is pure logic and does not touch the mouse. The main loop applies its output to a mouse backend.
-- Posture debouncing: the four finger up or down readings are classified into a posture (point, two fingers, palm, fist) every frame, but that reading only takes effect once the same posture has held for two consecutive frames. A single frame where the camera misreads a finger cannot flip the mode; a real gesture change still lands within about 60ms, well under what a person can notice.
-- Posture locking during a pinch: bringing your thumb and index finger together naturally curls the index finger, which can make it briefly read as "down". Left unguarded, that curl reclassifies the posture away from MOVE (or the two finger posture) mid pinch, and the engine clears its pinch tracking before the click ever fires. This was the real reason clicking felt unreliable. The fix: the moment a pinch begins, the posture is frozen to whatever was confirmed right before the curl started, for the whole gesture including the release, and only re-evaluated once the pinch is fully over. This also protects drags and right clicks, since they use the same lock.
-- Click confirmation: a fresh left click, right click, or double click plays a short beep (a different pitch for right click) and shows a large fading badge with an expanding ring at the exact spot the click landed, for over half a second. The one frame MODE label was too fast to notice; this makes a working click actually feel like it worked.
-- A plain English hint line (`hints.py`) is computed fresh every frame from the current mode, whether a hand is visible, and whether control is on. It always shows the single most useful next step, so a non technical user is never stuck guessing.
-- Safety: control can always be paused from the keyboard, including a global Ctrl + Alt + H hotkey, so a hand driven cursor can never trap you.
-
-## Tuning
-
-| Flag | Meaning |
-|---|---|
-| `--smooth` | One Euro min_cutoff. Lower is smoother but laggier, higher is snappier but noisier. Default 1.2 |
-| `--beta` | One Euro beta. Higher cuts lag on fast motion. Default 0.03 |
-| `--margin` | Active region margin. Smaller means a smaller hand motion covers the screen. Default 0.15 |
-| `--posture-hold` | Frames a posture must hold before the mode switches. Higher rejects more camera noise but reacts slightly slower. Default 2 |
-| `--pinch-on` | Thumb to index distance (share of hand size) that registers a pinch. Higher makes clicking easier to trigger if your natural pinch does not get very close. Default 0.35 |
-| `--pinch-off` | Distance that releases a pinch. Must stay above `--pinch-on`. Default 0.5 |
-| `--debug` | Show raw numbers (pinch ratio, target, finger bits) on the HUD |
-| `--no-control` | Run the full pipeline and HUD but do not move the real mouse, so you can observe first |
-| `--camera` | Camera index, default 0 |
-
-## Scalability and roadmap
-
-- Two hand support: one hand drives, the other issues modifier gestures.
-- A gesture recorder so users can bind custom postures to shortcuts.
-- Multi monitor mapping with a per display active region.
-- A profile system that saves per user smoothing and margin settings.
-- Optional Kalman fusion for even steadier tracking under poor lighting.
-- A tray app front end so it launches without a terminal.
-
-## Tests
-
-Headless, no camera, no window, no real mouse. If a `.venv` folder exists in the project, use its Python; otherwise `py -3.12` works directly.
-
+```bash
+py -3.12 main.py --skip-tutorial --debug
+py -3.12 main.py --camera 1 --smooth 1.0 --margin 0.2
 ```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--camera` | Camera index | 0 |
+| `--smooth` | One Euro `min_cutoff`. Lower is smoother but laggier | 1.2 |
+| `--beta` | One Euro `beta`. Higher reduces lag on fast motion | 0.03 |
+| `--margin` | Active region margin. Smaller means a smaller hand movement covers the screen | 0.15 |
+| `--posture-hold` | Frames a posture must hold before the mode switches | 2 |
+| `--pinch-on` | Thumb-to-index distance (share of hand size) that registers a pinch | 0.35 |
+| `--pinch-off` | Distance that releases a pinch. Must stay above `--pinch-on` | 0.5 |
+| `--skip-tutorial` | Go straight to the app (control still starts OFF, press `C`) | off |
+| `--debug` | Show raw numbers (pinch ratio, target, finger bits) on the HUD | off |
+
+## Testing
+
+The tests run headless with a fake mouse backend, so no camera is opened and the real mouse is never touched. Install the dependencies first, because the tests import the app modules.
+
+```bash
 py -3.12 tests/smoke_test.py
 ```
 
-106 checks, four of which (`*_survives_finger_curl_mid_pinch`) exist specifically to prove clicking, dragging, and right clicking all still work even when a pinch curls the finger enough to momentarily misread the posture. They fail on the old code and pass on the fixed code; that is what proves this was a real bug, not a guess.
+The suite has 32 test functions covering the One Euro filter, coordinate mapping, posture classification and debouncing, click, drag, double click, right click and scroll behavior, the finger-curl-during-pinch regressions, the safety toggle, the tutorial flow and the status hints. It exits with code 0 when every check passes.
 
-## Notes
+## Limitations and Roadmap
 
-- MediaPipe is pinned to 0.10.21 and numpy to below 2, which is the verified combination for this build.
-- License: MIT.
+- Windows only for now: capture uses DirectShow and the click beep uses `winsound`.
+- Tracks one hand and maps to the primary monitor only (`max_num_hands=1`, first monitor reported by `screeninfo`).
+- Finger up/down is judged by fingertip height against the joint below it in the image, so the hand needs to stay roughly upright and facing the camera.
+- Planned: two-hand modifier gestures, a recorder for custom gesture bindings, multi-monitor mapping, saved per-user profiles and a tray app front end.
+
+## Author
+
+**Shahram Shafiq** - [GitHub](https://github.com/shahramshafiq) | [LinkedIn](https://www.linkedin.com/in/shahramshafiq/)
